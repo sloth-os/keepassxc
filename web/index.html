@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KeePassXC Web</title>
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>">
+<link rel="stylesheet" href="styles.css">
+<script src="wasm/keepassxc.js"></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+
+<div id="boot"><div class="spinner"></div><p id="boot-msg">Loading the KeePassXC engine …</p></div>
+
+<!-- ================= Landing ================= -->
+<section id="landing" hidden>
+  <div class="hero">
+    <h1>🔐 KeePassXC <em>Web</em></h1>
+    <p class="tagline">
+      The real KeePassXC core — database engine, KDBX&nbsp;4 reader/writer, Botan&nbsp;3
+      crypto, Argon2 — compiled to WebAssembly and running entirely in this
+      browser tab. Your passwords never leave this page.
+    </p>
+    <div class="cards">
+      <button class="card" id="btn-open">
+        <span class="big">📂</span>
+        <span><b>Open database</b><br><small>Open or drop a .kdbx file</small></span>
+      </button>
+      <button class="card" id="btn-create">
+        <span class="big">✨</span>
+        <span><b>Create database</b><br><small>New encrypted vault in this browser</small></span>
+      </button>
+    </div>
+    <div id="recent" hidden>
+      <h2>Saved on this device</h2>
+      <ul id="recent-list"></ul>
+      <p class="hint">Encrypted copies stored in this browser's IndexedDB (origin-scoped).</p>
+    </div>
+    <footer>
+      KeePassXC core (GPL-2/3) · headless build · Botan 3 · Emscripten ·
+      single-threaded (GitHub Pages has no COOP/COEP, so no threads — KDF is
+      slower, security is identical)
+    </footer>
+  </div>
+</section>
+
+<!-- ================= Unlock ================= -->
+<section id="unlock" hidden>
+  <form class="panel unlock-panel" id="unlock-form">
+    <h2>🔒<span id="unlock-filename">database.kdbx</span></h2>
+    <label class="field">
+      <span>Master password</span>
+      <input type="password" id="unlock-password" autocomplete="current-password" autofocus>
+    </label>
+    <label class="field">
+      <span>Key file <small>(optional)</small></span>
+      <input type="file" id="unlock-keyfile">
+    </label>
+    <label class="check">
+      <input type="checkbox" id="unlock-keep" checked>
+      Keep an encrypted copy in this browser <small>(lets you unlock it again
+      without re-uploading; stored only in this browser's IndexedDB)</small>
+    </label>
+    <p class="error" id="unlock-error" hidden></p>
+    <div class="row">
+      <button type="button" class="btn ghost" id="unlock-back">← Back</button>
+      <button type="submit" class="btn primary" id="unlock-go">Unlock</button>
+    </div>
+  </form>
+</section>
+
+<!-- ================= Main ================= -->
+<section id="main" hidden>
+  <header id="topbar">
+    <span id="db-title" title="">Database</span>
+    <span id="dirty-dot" title="Unsaved changes" hidden>●</span>
+    <input id="search" type="search" placeholder="Search entries…" autocomplete="off">
+    <div class="topbar-actions">
+      <button class="btn" id="btn-save" title="Save (Ctrl+S)">💾 Save</button>
+      <button class="btn" id="btn-download" title="Download .kdbx file">⬇ Download</button>
+      <button class="btn" id="btn-credentials" title="Change master password / key file">🔑 Credentials</button>
+      <button class="btn warn" id="btn-lock" title="Lock (Ctrl+L)">🔒 Lock</button>
+    </div>
+  </header>
+
+  <div id="layout">
+    <nav id="tree-pane"><div id="tree"></div></nav>
+    <section id="list-pane">
+      <div id="list-head">
+        <h3 id="list-title">All entries</h3>
+        <button class="btn small" id="btn-add-entry">＋ Entry</button>
+      </div>
+      <div id="entry-list"></div>
+    </section>
+    <article id="detail-pane"><div id="detail"><p class="hint">Select an entry.</p></div></article>
+  </div>
+</section>
+
+<!-- ================= Dialogs ================= -->
+<dialog id="dlg-create">
+  <form method="dialog" class="panel" id="create-form">
+    <h2>Create database</h2>
+    <label class="field"><span>Name</span>
+      <input id="create-name" required value="My Vault"></label>
+    <label class="field"><span>Master password</span>
+      <input type="password" id="create-password" required autocomplete="new-password"></label>
+    <label class="field"><span>Repeat password</span>
+      <input type="password" id="create-password2" required autocomplete="new-password"></label>
+    <div class="pw-health" id="create-health" hidden>
+      <div class="bar"><i id="create-health-bar"></i></div>
+      <small id="create-health-text"></small>
+    </div>
+    <label class="field"><span>Key file <small>(optional — a key file you upload now will be required every unlock)</small></span>
+      <input type="file" id="create-keyfile"></label>
+    <label class="field"><span>Key derivation</span>
+      <select id="create-kdf">
+        <option value="fast">Argon2id — fast (for trying this out: 2 passes, 8 MiB)</option>
+        <option value="balanced" selected>Argon2id — balanced (3 passes, 64 MiB) — recommended</option>
+        <option value="strong">Argon2id — strong (4 passes, 256 MiB)</option>
+        <option value="aes">AES-KDF (fast, weaker)</option>
+      </select></label>
+    <p class="hint">Key derivation runs single-threaded in the tab and blocks
+    the page for a few seconds — the busy screen you'll see is expected.</p>
+    <p class="error" id="create-error" hidden></p>
+    <div class="row">
+      <button class="btn ghost" value="cancel">Cancel</button>
+      <button class="btn primary" value="ok" id="create-go">Create</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-entry">
+  <form method="dialog" class="panel wide" id="entry-form">
+    <h2 id="entry-form-title">Edit entry</h2>
+    <div class="grid2">
+      <label class="field"><span>Title</span><input id="e-title" required></label>
+      <label class="field"><span>Username</span><input id="e-username" autocomplete="off"></label>
+      <label class="field"><span>Password</span>
+        <span class="input-group">
+          <input type="password" id="e-password" autocomplete="new-password">
+          <button type="button" class="btn small" id="e-toggle-pw" title="show">👁</button>
+          <button type="button" class="btn small" id="e-gen" title="generate">🎲</button>
+        </span>
+        <span class="pw-health" id="e-health" hidden>
+          <span class="bar"><i id="e-health-bar"></i></span>
+          <small id="e-health-text"></small>
+        </span>
+      </label>
+      <label class="field"><span>URL</span><input id="e-url" type="url" placeholder="https://"></label>
+      <label class="field"><span>Tags <small>(comma-separated)</small></span><input id="e-tags"></label>
+      <label class="field"><span>Icon number<small>(KeePass icon set)</small></span><input id="e-icon" type="number" min="0" max="68" value="0"></label>
+    </div>
+    <label class="field"><span>Notes</span><textarea id="e-notes" rows="3"></textarea></label>
+    <div class="field"><span>Custom attributes</span>
+      <div id="e-attrs"></div>
+      <button type="button" class="btn small" id="e-attr-add">＋ attribute</button>
+    </div>
+    <label class="check"><input type="checkbox" id="e-expires"> Entry expires
+      <input type="datetime-local" id="e-expiry" hidden></label>
+    <p class="error" id="entry-error" hidden></p>
+    <div class="row">
+      <button class="btn ghost" value="cancel">Cancel</button>
+      <button class="btn primary" value="ok" id="entry-go">Save entry</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-group">
+  <form method="dialog" class="panel" id="group-form">
+    <h2 id="group-form-title">Edit group</h2>
+    <label class="field"><span>Name</span><input id="g-name" required></label>
+    <label class="field"><span>Notes</span><textarea id="g-notes" rows="2"></textarea></label>
+    <label class="field"><span>Icon number</span><input id="g-icon" type="number" min="0" max="68" value="48"></label>
+    <p class="error" id="group-error" hidden></p>
+    <div class="row">
+      <button class="btn ghost" value="cancel">Cancel</button>
+      <button class="btn primary" value="ok" id="group-go">Save group</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-generator">
+  <div class="panel wide">
+    <h2>Password generator</h2>
+    <div class="tabs">
+      <button class="tab on" data-tab="pw">Password</button>
+      <button class="tab" data-tab="phrase">Passphrase</button>
+    </div>
+    <div id="gen-pw" class="tab-body">
+      <label class="field"><span>Length: <b id="gen-len-v">20</b></span>
+        <input type="range" id="gen-len" min="6" max="64" value="20"></label>
+      <div class="checks" id="gen-classes">
+        <label class="check"><input type="checkbox" value="1" checked> abc lower</label>
+        <label class="check"><input type="checkbox" value="2" checked> ABC upper</label>
+        <label class="check"><input type="checkbox" value="4" checked> 123 digits</label>
+        <label class="check"><input type="checkbox" value="8"> {} braces</label>
+        <label class="check"><input type="checkbox" value="16"> ;: punctuation</label>
+        <label class="check"><input type="checkbox" value="32"> "' quotes</label>
+        <label class="check"><input type="checkbox" value="64"> -– dashes</label>
+        <label class="check"><input type="checkbox" value="128"> +× math</label>
+        <label class="check"><input type="checkbox" value="256"> #$ logograms</label>
+        <label class="check"><input type="checkbox" value="512"> àé extended</label>
+      </div>
+      <div class="checks">
+        <label class="check"><input type="checkbox" id="gen-alike" checked> exclude look-alikes</label>
+        <label class="check"><input type="checkbox" id="gen-every" checked> from every group</label>
+      </div>
+      <label class="field"><span>Exclude characters</span><input id="gen-exclude" placeholder="e.g. 0OIl"></label>
+    </div>
+    <div id="gen-phrase" class="tab-body" hidden>
+      <label class="field"><span>Words: <b id="gen-words-v">6</b></span>
+        <input type="range" id="gen-words" min="3" max="12" value="6"></label>
+      <label class="field"><span>Separator</span><input id="gen-sep" value=" " size="4"></label>
+      <p class="hint">EFF large wordlist (7776 words, shipped with the app).</p>
+    </div>
+    <div class="field"><span>Result</span>
+      <span class="input-group">
+        <output id="gen-result" class="mono"></output>
+        <button class="btn small" id="gen-refresh">↻</button>
+      </span>
+      <span class="pw-health" id="gen-health">
+        <span class="bar"><i id="gen-health-bar"></i></span>
+        <small id="gen-health-text"></small>
+      </span>
+    </div>
+    <div class="row">
+      <button class="btn ghost" id="gen-close">Close</button>
+      <button class="btn" id="gen-copy">📋 Copy</button>
+      <button class="btn primary" id="gen-use">Use</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="dlg-totp">
+  <form method="dialog" class="panel" id="totp-form">
+    <h2>TOTP setup</h2>
+    <label class="field"><span>Secret <small>(Base32)</small></span>
+      <input id="t-key" class="mono" placeholder="e.g. JBSWY3DPEHPK3PXP" autocomplete="off"></label>
+    <div class="grid2">
+      <label class="field"><span>Digits</span>
+        <select id="t-digits"><option>6</option><option>8</option></select></label>
+      <label class="field"><span>Period (s)</span>
+        <select id="t-step"><option>30</option><option>60</option></select></label>
+    </div>
+    <label class="field"><span>Algorithm</span>
+      <select id="t-algo">
+        <option value="0">SHA-1</option><option value="1">SHA-256</option><option value="2">SHA-512</option>
+      </select></label>
+    <p class="hint">Leave the secret empty and submit to remove TOTP.</p>
+    <p class="error" id="totp-error" hidden></p>
+    <div class="row">
+      <button class="btn ghost" value="cancel">Cancel</button>
+      <button class="btn primary" value="ok">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-credentials">
+  <form method="dialog" class="panel" id="credentials-form">
+    <h2>Change credentials</h2>
+    <p class="hint">Changes the master password / key file of this database.
+    The old credentials keep working on previously saved copies.</p>
+    <label class="field"><span>New master password</span>
+      <input type="password" id="c-password" autocomplete="new-password"></label>
+    <label class="field"><span>Key file <small>(leave empty to remove)</small></span>
+      <input type="file" id="c-keyfile"></label>
+    <p class="error" id="credentials-error" hidden></p>
+    <div class="row">
+      <button class="btn ghost" value="cancel">Cancel</button>
+      <button class="btn primary" value="ok">Change &amp; save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-move">
+  <form method="dialog" class="panel" id="move-form">
+    <h2>Move</h2>
+    <label class="field"><span>Destination group</span>
+      <select id="m-group"></select></label>
+    <p class="error" id="move-error" hidden></p>
+    <div class="row">
+      <button class="btn ghost" value="cancel">Cancel</button>
+      <button class="btn primary" value="ok">Move</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- busy overlay + toasts (overlay starts hidden; busy() shows it) -->
+<div id="overlay" hidden><div><div class="spinner"></div><p id="overlay-label">Working …</p></div></div>
+<div id="toasts"></div>
+
+</body>
+</html>

@@ -1,0 +1,65 @@
+Hardware YubiKeys cannot be attached from a browser tab, and the YubiKey
+driver stack (ykcore, USB/PCSC backends, QtConcurrent discovery) is not
+compiled into the wasm build. Replace the driver include with a local
+YubiKeySlot typedef and make challenge() fail cleanly. Challenge-response
+keys can still be listed in a database; unlocking with one reports a clear
+error instead of failing to link.
+
+The stub header no longer pulls in <QIODevice> transitively (the driver
+header did), so add it directly to the .cpp where QDataStream needs it.
+
+--- a/src/keys/ChallengeResponseKey.h
++++ b/src/keys/ChallengeResponseKey.h
+@@ -19,8 +19,18 @@
+ #ifndef KPXC_CHALLENGE_RESPONSE_KEY_H
+ #define KPXC_CHALLENGE_RESPONSE_KEY_H
+ 
++#include <QDataStream>
++#include <QPair>
++
++#include <botan/secmem.h>
++
+ #include "Key.h"
+-#include "drivers/YubiKey.h"
++
++// WebAssembly build: hardware YubiKeys cannot be attached from a browser
++// tab and the YubiKey driver stack is not compiled in. The slot type is
++// kept so serialized keys still round-trip; challenge() always fails
++// cleanly with an error message.
++typedef QPair<unsigned int, int> YubiKeySlot;
+ 
+ class ChallengeResponseKey : public Key
+ {
+--- a/src/keys/ChallengeResponseKey.cpp
++++ b/src/keys/ChallengeResponseKey.cpp
+@@ -20,6 +20,8 @@
+ 
+ #include "core/AsyncTask.h"
+ 
++#include <QIODevice>
++
+ QUuid ChallengeResponseKey::UUID("e092495c-e77d-498b-84a1-05ae0d955508");
+ 
+ ChallengeResponseKey::ChallengeResponseKey(YubiKeySlot keySlot)
+@@ -50,17 +52,10 @@
+ 
+ bool ChallengeResponseKey::challenge(const QByteArray& challenge)
+ {
+-    m_error.clear();
+-    auto result =
+-        AsyncTask::runAndWaitForFuture([&] { return YubiKey::instance()->challenge(m_keySlot, challenge, m_key); });
+-
+-    if (result != YubiKey::ChallengeResult::YCR_SUCCESS) {
+-        // Record the error message
+-        m_key.clear();
+-        m_error = YubiKey::instance()->errorMessage();
+-    }
+-
+-    return result == YubiKey::ChallengeResult::YCR_SUCCESS;
++    Q_UNUSED(challenge);
++    m_key.clear();
++    m_error = QStringLiteral("YubiKey challenge-response is not available in the browser.");
++    return false;
+ }
+ 
+ QByteArray ChallengeResponseKey::serialize() const

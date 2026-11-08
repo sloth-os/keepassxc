@@ -1,0 +1,77 @@
+Add direct includes that upstream core files received only transitively
+through AsyncTask.h -> <QtConcurrent>, which the wasm AsyncTask
+replacement does not include, and stub EntryAttachments::openAttachment:
+QDesktopServices lives in QtGui, which is not part of the QtCore-only
+wasm build, and a browser tab cannot hand a temp file to the desktop
+anyway (attachment extraction happens on the JS side).
+
+--- a/src/core/Database.cpp
++++ b/src/core/Database.cpp
+@@ -27,6 +27,9 @@
+ #include "format/KeePass2Writer.h"
+ #include "streams/HashingStream.h"
+ 
++#include <QBuffer>
++#include <QCollator>
++#include <QDir>
+ #include <QFileInfo>
+ #include <QJsonObject>
+ #include <QRegularExpression>
+--- a/src/core/FileWatcher.cpp
++++ b/src/core/FileWatcher.cpp
+@@ -19,6 +19,9 @@
+ 
+ #include "core/AsyncTask.h"
+ 
++#include <QCryptographicHash>
++#include <QFile>
++
+ #ifdef Q_OS_LINUX
+ #include <sys/statfs.h>
+ #endif
+--- a/src/crypto/kdf/AesKdf.cpp
++++ b/src/crypto/kdf/AesKdf.cpp
+@@ -21,6 +21,8 @@
+ #include "crypto/SymmetricCipher.h"
+ #include "format/KeePass2.h"
+ 
++#include <QElapsedTimer>
++
+ AesKdf::AesKdf()
+     : Kdf::Kdf(KeePass2::KDF_AES_KDBX4)
+ {
+--- a/src/core/EntryAttachments.cpp
++++ b/src/core/EntryAttachments.cpp
+@@ -22,7 +22,6 @@
+ #include "core/Tools.h"
+ #include "crypto/Random.h"
+ 
+-#include <QDesktopServices>
+ #include <QDir>
+ #include <QProcessEnvironment>
+ #include <QScopeGuard>
+@@ -218,6 +217,16 @@
+ 
+ bool EntryAttachments::openAttachment(const QString& key, QString* errorMessage)
+ {
++    // WebAssembly build: there is no desktop to hand the file to, and
++    // QDesktopServices (QtGui) is not linked. Extraction to the user's
++    // machine happens on the JS side instead; see the bridge.
++    Q_UNUSED(key);
++    if (errorMessage) {
++        *errorMessage = tr("Attachments are opened from the web interface, not from the module.");
++    }
++    return false;
++
++#if 0
+     if (!m_openedAttachments.contains(key)) {
+         const QByteArray attachmentData = value(key);
+         auto ext = key.contains(".") ? "." + key.split(".").last() : "";
+@@ -283,6 +292,7 @@
+     }
+ 
+     return openOk;
++#endif // disabled wasm stub above returns early
+ }
+ 
+ void EntryAttachments::attachmentFileModified(const QString& path)

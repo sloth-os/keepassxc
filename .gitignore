@@ -1,0 +1,8 @@
+# ninja intermediates — rebuilt by scripts/build.sh; the publishable
+# artifacts land in web/wasm/ and ARE committed so a clone can serve the
+# site without the (large) toolchain.
+/build-wasm/
+
+# editor / OS noise
+*.swp
+.DS_Store

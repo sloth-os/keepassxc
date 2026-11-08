@@ -1,0 +1,43 @@
+Drop QtConcurrent usage from the core sources. The WebAssembly build is
+single-threaded and the Qt wasm prebuilt ships neither QtConcurrent nor
+QFuture, so these calls become plain sequential code.
+
+--- a/src/crypto/kdf/AesKdf.cpp
++++ b/src/crypto/kdf/AesKdf.cpp
+@@ -17,8 +17,6 @@
+ 
+ #include "AesKdf.h"
+ 
+-#include <QtConcurrent>
+-
+ #include "crypto/CryptoHash.h"
+ #include "crypto/SymmetricCipher.h"
+ #include "format/KeePass2.h"
+--- a/src/core/Group.cpp
++++ b/src/core/Group.cpp
+@@ -23,9 +23,6 @@
+ #include "core/Metadata.h"
+ #include "core/Tools.h"
+ 
+-#include <QtConcurrent>
+-#include <QtConcurrentFilter>
+-
+ const int Group::DefaultIconNumber = 48;
+ const int Group::OpenFolderIconNumber = 49;
+ const int Group::RecycleBinIconNumber = 43;
+@@ -611,8 +608,13 @@
+ QList<Entry*> Group::referencesRecursive(const Entry* entry) const
+ {
+     auto entries = entriesRecursive();
+-    return QtConcurrent::blockingFiltered(entries,
+-                                          [entry](const Entry* e) { return e->hasReferencesTo(entry->uuid()); });
++    QList<Entry*> references;
++    for (Entry* e : entries) {
++        if (e->hasReferencesTo(entry->uuid())) {
++            references.append(e);
++        }
++    }
++    return references;
+ }
+ 
+ Entry* Group::findEntryByUuid(const QUuid& uuid, bool recursive) const
