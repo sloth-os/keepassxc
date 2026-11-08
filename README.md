@@ -175,6 +175,9 @@ search → recycle bin), and console/page-error hygiene:
 ```sh
 # needs playwright-core with its chromium; any existing install works:
 PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core node scripts/test-browser.mjs
+
+# against the live site instead of a local server (post-deploy check):
+SITE_URL=https://sloth-os.github.io/keepassxc/ node scripts/test-browser.mjs
 ```
 
 ## Deploying

@@ -35,6 +35,9 @@ function loadPlaywright() {
 }
 
 /* --- static server: /keepassxc/<file> -> web/<file> --------------------- */
+// With SITE_URL set, the suite runs against that URL directly (post-deploy
+// verification) and no local server is started.
+const SITE_URL = process.env.SITE_URL || null;
 const PREFIX = '/keepassxc/';
 const WEB = path.join(root, 'web');
 const MIME = {
@@ -44,24 +47,27 @@ const MIME = {
   '.wasm': 'application/wasm',
   '.data': 'application/octet-stream',
 };
-const server = http.createServer((req, res) => {
-  let p;
-  try { p = decodeURIComponent(new URL(req.url, 'http://x').pathname); }
-  catch { res.writeHead(400).end('bad url'); return; }
-  if (p === '/keepassxc') p = PREFIX;
-  if (!p.startsWith(PREFIX)) { res.writeHead(404).end('not found'); return; }
-  let rel = p.slice(PREFIX.length);
-  if (rel === '' || rel.endsWith('/')) rel += 'index.html';
-  const file = path.normalize(path.join(WEB, rel));
-  if (!file.startsWith(WEB) || !fs.statSync(file, { throwIfNoEntry: false })?.isFile()) {
-    res.writeHead(404).end('not found'); return;
-  }
-  res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' });
-  fs.createReadStream(file).pipe(res);
-});
-await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-const port = server.address().port;
-const site = `http://127.0.0.1:${port}/keepassxc/`;
+let server = null;
+let site = SITE_URL;
+if (!site) {
+  server = http.createServer((req, res) => {
+    let p;
+    try { p = decodeURIComponent(new URL(req.url, 'http://x').pathname); }
+    catch { res.writeHead(400).end('bad url'); return; }
+    if (p === '/keepassxc') p = PREFIX;
+    if (!p.startsWith(PREFIX)) { res.writeHead(404).end('not found'); return; }
+    let rel = p.slice(PREFIX.length);
+    if (rel === '' || rel.endsWith('/')) rel += 'index.html';
+    const file = path.normalize(path.join(WEB, rel));
+    if (!file.startsWith(WEB) || !fs.statSync(file, { throwIfNoEntry: false })?.isFile()) {
+      res.writeHead(404).end('not found'); return;
+    }
+    res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' });
+    fs.createReadStream(file).pipe(res);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  site = `http://127.0.0.1:${server.address().port}/keepassxc/`;
+}
 
 /* --- harness ------------------------------------------------------------ */
 let failures = 0;
@@ -230,6 +236,6 @@ check('no console errors', consoleErrors.length === 0, consoleErrors.join(' | ')
 check('no uncaught page errors', pageErrors.length === 0, pageErrors.join(' | '));
 
 await browser.close();
-server.close();
+if (server) server.close();
 console.log(failures === 0 ? '\nALL BROWSER TESTS PASSED' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);
