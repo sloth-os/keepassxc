@@ -82,6 +82,13 @@ page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text(
 // confirm() dialogs (group delete, empty bin) are accepted automatically
 page.on('dialog', (d) => d.accept().catch(() => {}));
 
+// Waits bounded by the network scale up against the live site: the
+// ~10 MB engine download (plus the service worker's parallel precache
+// of the same bytes) can take many minutes on a slow link — the local
+// server and CI's runners never notice. Everything after boot runs on
+// the in-memory engine, so only the boot and worker waits use this.
+const NET = SITE_URL ? 30 * 60_000 : 60_000;
+
 const vis = (sel, timeout = 30000) => page.waitForSelector(sel, { state: 'visible', timeout });
 // Closed <dialog>s stay in the DOM (they only lose [open]), so wait for
 // "hidden" — which resolves both when the selector stops matching and when
@@ -92,8 +99,8 @@ const count = (sel) => page.$$(sel).then((n) => n.length);
 
 /* --- boot ---------------------------------------------------------------- */
 console.log('boot');
-await page.goto(site);
-await vis('#landing');
+await page.goto(site, { timeout: NET });
+await vis('#landing', NET);
 check('landing visible after boot', true);
 check('boot screen hidden', await page.isHidden('#boot'));
 check('busy overlay starts hidden', await page.isHidden('#overlay'),
@@ -255,7 +262,7 @@ if (SITE_URL) {
 
 // the service worker registers, activates and claims this page
 await page.waitForFunction(() => navigator.serviceWorker.controller !== null,
-  null, { timeout: 60000 });
+  null, { timeout: NET });
 check('service worker controls the page', true);
 
 // one versioned cache holds the whole app shell — engine included
