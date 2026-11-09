@@ -3,6 +3,12 @@
 # site without the (large) toolchain.
 /build-wasm/
 
+# local playwright-core install for the browser test (see the header of
+# scripts/test-browser.mjs; CI installs it with --no-save instead). Keep the
+# npm droppings out — deploy.sh commits with `git add -A`.
+node_modules/
+package-lock.json
+
 # editor / OS noise
 *.swp
 .DS_Store

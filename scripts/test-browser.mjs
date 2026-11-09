@@ -3,7 +3,8 @@
 // prefix (exactly how GitHub Pages serves a project page) and drives the
 // real UI in headless Chromium: boot → create → group/entry CRUD → TOTP →
 // save → lock → reopen (wrong password, then correct) → search → recycle
-// bin. Fails on any uncaught page error or console.error.
+// bin → PWA (manifest, icons, service worker precache, offline reload).
+// Fails on any uncaught page error or console.error.
 //
 // Usage: node scripts/test-browser.mjs
 //
@@ -14,25 +15,11 @@
 // browser executable outright.
 import http from 'node:http';
 import fs from 'node:fs';
-import net from 'node:net';
 import path from 'node:path';
 import process from 'node:process';
-import { createRequire } from 'node:module';
+import { loadPlaywright } from './pw.mjs';
 
-const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-
-function loadPlaywright() {
-  const candidates = [];
-  if (process.env.PLAYWRIGHT_CORE) candidates.push(process.env.PLAYWRIGHT_CORE);
-  candidates.push(path.join(root, 'node_modules', 'playwright-core'));
-  candidates.push(path.join(process.cwd(), 'node_modules', 'playwright-core'));
-  for (const c of candidates) {
-    try { return require(c); } catch { /* try next */ }
-  }
-  console.error('playwright-core not found — see the header comment of this script');
-  process.exit(2);
-}
 
 /* --- static server: /keepassxc/<file> -> web/<file> --------------------- */
 // With SITE_URL set, the suite runs against that URL directly (post-deploy
@@ -46,6 +33,8 @@ const MIME = {
   '.css': 'text/css',
   '.wasm': 'application/wasm',
   '.data': 'application/octet-stream',
+  '.webmanifest': 'application/manifest+json',
+  '.png': 'image/png',
 };
 let server = null;
 let site = SITE_URL;
@@ -229,6 +218,71 @@ await page.click('#btn-empty-bin');
 await page.waitForFunction(() =>
   document.querySelector('#entry-list .hint')?.textContent.includes('No entries'));
 check('bin emptied', true);
+
+/* --- pwa / offline -------------------------------------------------------- */
+console.log('pwa & offline');
+
+// manifest fetches and parses; both icons are declared any+maskable
+const manifest = await page.evaluate(async () => {
+  const r = await fetch('manifest.webmanifest');
+  return r.ok ? await r.json() : null;
+});
+check('manifest.webmanifest parses', manifest?.name === 'KeePassXC Web');
+check('manifest declares any+maskable icons',
+  manifest?.icons?.length === 2
+    && manifest.icons.every((i) => i.purpose === 'any maskable' && /192|512/.test(i.sizes)),
+  JSON.stringify(manifest?.icons));
+
+// the icon files decode at their declared sizes
+const dims = await page.evaluate(async () => {
+  const out = {};
+  for (const s of [192, 512]) {
+    const blob = await (await fetch(`icons/icon-${s}.png`)).blob();
+    const bmp = await createImageBitmap(blob);
+    out[s] = `${bmp.width}×${bmp.height}`;
+  }
+  return out;
+});
+check('icon-192.png is 192×192', dims[192] === '192×192', dims[192]);
+check('icon-512.png is 512×512', dims[512] === '512×512', dims[512]);
+
+// against the live site: the published worker must carry a real cache
+// version (publish-site.sh stamps the placeholder at publish time)
+if (SITE_URL) {
+  const swText = await page.evaluate(() => fetch('sw.js').then((r) => r.text()));
+  check('live sw.js is version-stamped', !swText.includes('__PRECACHE_VERSION__'));
+}
+
+// the service worker registers, activates and claims this page
+await page.waitForFunction(() => navigator.serviceWorker.controller !== null,
+  null, { timeout: 60000 });
+check('service worker controls the page', true);
+
+// one versioned cache holds the whole app shell — engine included
+const precache = await page.evaluate(async () => {
+  const names = (await caches.keys()).filter((n) => n.startsWith('kpxc-'));
+  if (names.length !== 1) return { missing: [`caches: ${names.join(', ')}`] };
+  const have = new Set((await (await caches.open(names[0])).keys()).map((r) => r.url));
+  const want = ['', 'index.html', 'app.js', 'styles.css', 'manifest.webmanifest',
+    'icons/icon-192.png', 'icons/icon-512.png',
+    'wasm/keepassxc.js', 'wasm/keepassxc.wasm', 'wasm/keepassxc.data']
+    .map((p) => new URL(p, location).href);
+  return { missing: want.filter((w) => !have.has(w)) };
+});
+check('precache holds the full app shell', precache.missing.length === 0,
+  precache.missing.join(' '));
+
+// offline: lock the vault, cut the network, reload — the entire app
+// (page, UI, ~10 MB engine) must come back from the service worker cache
+await page.click('#btn-lock');
+await vis('#landing');
+await page.context().setOffline(true);
+await page.reload();
+await vis('#landing');
+check('offline reload boots the app', true);
+check('saved vault available offline',
+  (await text('#recent-list')).includes('Test_Vault.kdbx'), await text('#recent-list'));
+await page.context().setOffline(false);
 
 /* --- hygiene ------------------------------------------------------------- */
 console.log('hygiene');

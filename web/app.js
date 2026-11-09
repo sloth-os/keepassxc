@@ -1293,4 +1293,13 @@ async function boot() {
   });
 }
 
+/* ------------------------------------------------------------ offline */
+/* Register the service worker (offline app shell — see sw.js). It serves
+ * network-first, so an open tab picks up publishes on its next reload by
+ * itself; nothing to signal here. */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js')
+    .catch((e) => console.warn('[sw] registration failed:', e.message));
+}
+
 boot();

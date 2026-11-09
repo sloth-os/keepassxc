@@ -12,7 +12,9 @@ import process from 'node:process';
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-const buildDir = process.argv[2] || path.join(root, 'build-wasm');
+// resolve() so a relative build-dir argument works (require() would
+// treat a bare relative path as a package name)
+const buildDir = path.resolve(process.argv[2] || path.join(root, 'build-wasm'));
 
 let failures = 0;
 function check(name, cond, extra) {

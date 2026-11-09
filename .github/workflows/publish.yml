@@ -1,0 +1,48 @@
+# Publish the site to GitHub Pages on every push to main.
+#
+# The publishable wasm artifacts are committed (web/wasm/), so this job
+# needs no C++/emscripten toolchain: it tests exactly the bytes that
+# ship — node smoke test + browser UI test against the committed web/ —
+# then force-pushes a fresh orphan gh-pages branch via
+# scripts/publish-site.sh (shared with the local deploy.sh, which stamps
+# the service worker's cache version) and verifies the live URL,
+# including that this publish's cache version actually went out.
+name: publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: publish
+  cancel-in-progress: true
+
+permissions:
+  contents: write # push the gh-pages branch
+  pages: write    # gh api: verify (or enable) the Pages source
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: node smoke test (committed wasm artifacts)
+        run: node scripts/test-node.mjs web/wasm
+
+      - name: browser UI test (committed web/ under the /keepassxc/ prefix)
+        run: |
+          npm install --no-save playwright-core@1.63.0
+          node node_modules/playwright-core/cli.js install --with-deps chromium
+          node scripts/test-browser.mjs
+
+      - name: publish gh-pages and verify the live site
+        run: bash scripts/publish-site.sh
