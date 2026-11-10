@@ -23,7 +23,11 @@ Live site: <https://sloth-os.github.io/keepassxc/>
   YubiKey stubs, missing direct includes, `openAttachment` stub).
 - **`web/`** — the static site (`index.html`, `app.js`, `styles.css`).
   Settings and the opt-in encrypted autosave persist in IndexedDB via
-  IDBFS; everything else lives in wasm memory for the session.
+  IDBFS; everything else lives in wasm memory for the session. The site
+  is an installable PWA: a service worker precaches the app shell for
+  offline use, and once installed the app registers with the OS as an
+  "open with" handler for `.kdbx` files (delivered in-page via
+  `launchQueue`, queued until the engine finishes booting).
 - **`scripts/`** — `vendor.sh` (source vendoring), `build.sh` (compile),
   `test-node.mjs` (bridge smoke test), `test-browser.mjs` (in-browser UI
   test), `deploy.sh` (publish to GitHub Pages).
@@ -170,7 +174,10 @@ keyfile-only database. The test is CWD-independent.
 The browser test covers what node cannot — asset loading under the
 `/keepassxc/` subdirectory prefix GitHub Pages serves from, the real UI
 flows (create → groups/entries → TOTP → edit → save → lock → reopen →
-search → recycle bin), and console/page-error hygiene:
+search → recycle bin), the PWA layer (manifest, icons, service-worker
+precache, offline reload), OS file launches (picker, drag & drop, and a
+faked `launchQueue`, including a launch queued before the engine boots),
+and console/page-error hygiene:
 
 ```sh
 # needs playwright-core with its chromium; any existing install works:

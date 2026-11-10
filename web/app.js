@@ -1106,7 +1106,7 @@ async function enterMain() {
 }
 
 async function lockDb() {
-  if (state.dirty && !confirm('There are unsaved changes. Lock anyway?')) return;
+  if (state.dirty && !confirm('There are unsaved changes. Lock anyway?')) return false;
   kpx('kpx_close', '');
   state.open = false;
   state.tree = null;
@@ -1119,6 +1119,60 @@ async function lockDb() {
   await persistDb();
   showRecent();
   showSection('landing');
+  return true;
+}
+
+/* ------------------------------------------------------------ file handling
+ * The manifest registers the installed PWA with the OS as an "open with"
+ * handler for .kdbx files; the browser then delivers such launches to
+ * this page through window.launchQueue. A launch can arrive before the
+ * wasm engine has finished booting (even while this script is still
+ * evaluating), so files are queued and drained once boot() has the FS
+ * ready. */
+
+/* Open a .kdbx the user handed us — file picker, drag & drop, or an OS
+ * launch of the installed app. One vault at a time: if a database is
+ * open, close it first (with the usual unsaved-changes prompt);
+ * declining keeps the current vault and aborts the new file. */
+async function openFile(file) {
+  if (!file) return;
+  if (state.open && !(await lockDb())) {
+    toast('Kept the open database — the new file was not opened', 'err');
+    return;
+  }
+  const path = `/upload/${file.name}`;
+  try {
+    await loadFileInto(path, file);
+  } catch (e) {
+    toast(`Could not read “${file.name}”: ${e}`, 'err');
+    return;
+  }
+  startUnlock(path, file.name, path);
+}
+
+const pendingLaunchFiles = [];
+let engineReady = false;
+
+function drainLaunchFiles() {
+  engineReady = true;
+  for (const f of pendingLaunchFiles.splice(0)) openFile(f);
+}
+
+if ('launchQueue' in window) {
+  window.launchQueue.setConsumer(async (params) => {
+    const handles = params.files || [];
+    if (!handles.length) return;
+    try {
+      const file = await handles[0].getFile();
+      if (engineReady) openFile(file);
+      else pendingLaunchFiles.push(file);
+    } catch (e) {
+      console.warn('[launch] could not read the launched file', e);
+    }
+    if (handles.length > 1) {
+      toast('One vault at a time — only the first launched file was taken');
+    }
+  });
 }
 
 /* ------------------------------------------------------------ boot */
@@ -1146,17 +1200,16 @@ async function boot() {
   $('boot').hidden = true;
   showRecent();
   showSection('landing');
+  // any .kdbx launched at the PWA while the engine was still booting
+  drainLaunchFiles();
 
   // landing actions
   $('btn-open').onclick = () => {
     const inp = document.createElement('input');
     inp.type = 'file';
     inp.accept = '.kdbx';
-    inp.onchange = async () => {
-      if (!inp.files.length) return;
-      const f = inp.files[0];
-      await loadFileInto(`/upload/${f.name}`, f);
-      startUnlock(`/upload/${f.name}`, f.name, `/upload/${f.name}`);
+    inp.onchange = () => {
+      if (inp.files.length) openFile(inp.files[0]);
     };
     inp.click();
   };
@@ -1170,15 +1223,14 @@ async function boot() {
     setTimeout(() => $('create-name').focus(), 50);
   };
 
-  // drag & drop anywhere on the landing page
+  // drag & drop anywhere — same path as the picker and OS launches
+  // (dropping onto an open vault offers to close it first)
   document.addEventListener('dragover', (ev) => ev.preventDefault());
   document.addEventListener('drop', (ev) => {
     ev.preventDefault();
-    if (state.open) return;
     const f = ev.dataTransfer?.files?.[0];
     if (!f) return;
-    loadFileInto(`/upload/${f.name}`, f).then(() =>
-      startUnlock(`/upload/${f.name}`, f.name, `/upload/${f.name}`));
+    openFile(f);
   });
 
   // unlock

@@ -3,7 +3,8 @@
 // prefix (exactly how GitHub Pages serves a project page) and drives the
 // real UI in headless Chromium: boot → create → group/entry CRUD → TOTP →
 // save → lock → reopen (wrong password, then correct) → search → recycle
-// bin → PWA (manifest, icons, service worker precache, offline reload).
+// bin → PWA (manifest, icons, service worker precache, offline reload)
+// → file handling (picker, drag & drop, OS launches via launchQueue).
 // Fails on any uncaught page error or console.error.
 //
 // Usage: node scripts/test-browser.mjs
@@ -81,6 +82,38 @@ page.on('pageerror', (e) => pageErrors.push(String(e)));
 page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
 // confirm() dialogs (group delete, empty bin) are accepted automatically
 page.on('dialog', (d) => d.accept().catch(() => {}));
+
+/* --- os launch channel (PWA file handling) ---------------------------
+ * Real launchQueue delivery needs an *installed* PWA launched by the OS,
+ * which headless Chromium cannot do. Fake the channel instead: Chromium
+ * ships a native window.launchQueue that is LegacyUnforgeable (assigning
+ * to the property is silently ignored), so the fake patches setConsumer
+ * on its prototype — an ordinary writable method — and our shim runs
+ * when app.js registers its consumer. Browsers with no launchQueue get
+ * a plain fake object (the property is assignable there). Arming
+ * 'kpxc-test-autolaunch' in sessionStorage delivers a file at
+ * setConsumer time — before the engine has finished booting — to
+ * exercise the early-launch queue. */
+await page.addInitScript(() => {
+  const capture = (fn) => {
+    window.__kpxcLaunchConsumer = fn;
+    if (window.__kpxcAutoLaunch) {
+      const f = window.__kpxcAutoLaunch;
+      window.__kpxcAutoLaunch = null;
+      fn({ files: [{ getFile: () => Promise.resolve(f) }] });
+    }
+  };
+  if (window.launchQueue) {
+    Object.getPrototypeOf(window.launchQueue).setConsumer = capture;
+  } else {
+    window.launchQueue = { setConsumer: capture };
+  }
+  const armed = sessionStorage.getItem('kpxc-test-autolaunch');
+  if (armed) {
+    sessionStorage.removeItem('kpxc-test-autolaunch');
+    window.__kpxcAutoLaunch = new File([new Uint8Array(24)], armed);
+  }
+});
 
 // Waits bounded by the network scale up against the live site: the
 // ~10 MB engine download (plus the service worker's parallel precache
@@ -290,6 +323,93 @@ check('offline reload boots the app', true);
 check('saved vault available offline',
   (await text('#recent-list')).includes('Test_Vault.kdbx'), await text('#recent-list'));
 await page.context().setOffline(false);
+
+/* --- file handling ------------------------------------------------------ */
+console.log('file handling');
+
+// the manifest registers the installed app as an OS handler for .kdbx
+check('manifest declares a focus-existing .kdbx file handler',
+  manifest?.file_handlers?.length === 1
+    && manifest.file_handlers[0].action === './'
+    && manifest.file_handlers[0].launch_type === 'focus-existing'
+    && Object.values(manifest.file_handlers[0].accept || {}).flat().includes('.kdbx'),
+  JSON.stringify(manifest?.file_handlers));
+
+// real vault bytes to launch at the app: reopen the saved vault and
+// pull the file out via the Download button
+await page.click('#recent-list button:has-text("Open")');
+await vis('#unlock');
+await page.fill('#unlock-password', 'correct horse battery staple');
+await page.click('#unlock-go');
+await vis('#main');
+const [dl] = await Promise.all([
+  page.waitForEvent('download'),
+  page.click('#btn-download'),
+]);
+const vaultBytes = fs.readFileSync(await dl.path());
+
+// push a file through the (faked) OS launch channel
+const launch = (name, bytes) => page.evaluate(({ name, b64 }) => {
+  const data = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  window.__kpxcLaunchConsumer({
+    files: [{ getFile: () => Promise.resolve(new File([data], name)) }],
+  });
+}, { name, b64: bytes.toString('base64') });
+
+// an OS launch while a vault is open closes it and offers the new file
+await launch('Second.kdbx', vaultBytes);
+await vis('#unlock');
+check('launch switches from the open vault',
+  (await text('#unlock-filename')) === 'Second.kdbx', await text('#unlock-filename'));
+await page.fill('#unlock-password', 'correct horse battery staple');
+await page.click('#unlock-go');
+await vis('#main');
+check('launched vault unlocks', (await text('#db-title')) === 'Test Vault', await text('#db-title'));
+
+// back to the landing for the picker/drop tests (the vault just unlocked
+// from the launch is clean — no unsaved-changes prompt)
+await page.click('#btn-lock');
+await vis('#landing');
+
+// the file picker goes through the same openFile path
+const [chooser] = await Promise.all([
+  page.waitForEvent('filechooser'),
+  page.click('#btn-open'),
+]);
+await chooser.setFiles({
+  name: 'Picked.kdbx', mimeType: 'application/octet-stream', buffer: vaultBytes,
+});
+await vis('#unlock');
+check('picker offers the chosen file',
+  (await text('#unlock-filename')) === 'Picked.kdbx', await text('#unlock-filename'));
+await page.click('#unlock-back');
+await vis('#landing');
+
+// so does drag & drop
+await page.evaluate(() => {
+  const dt = new DataTransfer();
+  dt.items.add(new File([new Uint8Array(8)], 'Dropped.kdbx'));
+  document.dispatchEvent(new DragEvent('drop', { dataTransfer: dt }));
+});
+await vis('#unlock');
+check('drop offers the dropped file',
+  (await text('#unlock-filename')) === 'Dropped.kdbx', await text('#unlock-filename'));
+await page.click('#unlock-back');
+await vis('#landing');
+
+// a launch that arrives before the engine finishes booting is queued
+// and opened once boot completes
+await page.evaluate(() => sessionStorage.setItem('kpxc-test-autolaunch', 'Early.kdbx'));
+await page.reload({ timeout: NET });
+await vis('#unlock', NET);
+check('pre-boot launch queued until the engine is ready',
+  (await text('#unlock-filename')) === 'Early.kdbx', await text('#unlock-filename'));
+await page.fill('#unlock-password', 'nope');
+await page.click('#unlock-go');
+await vis('#unlock-error');
+check('queued file is a real unlock target', (await text('#unlock-error')).length > 0);
+await page.click('#unlock-back');
+await vis('#landing');
 
 /* --- hygiene ------------------------------------------------------------- */
 console.log('hygiene');
